@@ -76,13 +76,14 @@ The proxy routes by `model` to a real text-only backend and is format-agnostic a
 backend health. Verified end-to-end (image -> Doubao description -> backend answers
 correctly) on this server:
 
-| Upstream model      | Backend                  | Status |
-|---------------------|--------------------------|--------|
-| `deepseek-v4-flash` | api.deepseek.com/anthropic | ✅ works |
-| `LongCat-2.0`       | api.longcat.chat/anthropic | ✅ works |
-| `MiniMax-M3`        | api.minimaxi.com/anthropic | ✅ works |
-| `glm-latest`        | ark …/api/plan           | ⚠️ routed, but Ark **AgentPlan subscription expired** - renew in Ark console, then works with no code change |
-| `mimo-v2.5-pro`     | xiaomimimo.com/anthropic | ⚠️ routed, but cc-switch token **invalid (401)** - refresh the mimo token |
+| Upstream model      | Backend                  | Format | Status |
+|---------------------|--------------------------|--------|--------|
+| `deepseek-v4-flash` | api.deepseek.com/anthropic | anthropic | ✅ works (Claude Code) |
+| `LongCat-2.0`       | api.longcat.chat/anthropic | anthropic | ✅ works |
+| `MiniMax-M3`        | api.minimaxi.com/anthropic | anthropic | ✅ works |
+| `deepseek-v4-flash-ga-260731` | ark …/api/v3 | openai_responses | ✅ works (Codex CLI) |
+| `glm-latest`        | ark …/api/plan           | anthropic | ⚠️ routed, but Ark **AgentPlan subscription expired** - renew in Ark console, then works with no code change |
+| `mimo-v2.5-pro`     | xiaomimimo.com/anthropic | anthropic | ⚠️ routed, but cc-switch token **invalid (401)** - refresh the mimo token |
 
 Doubao vision model (`doubao-seed-2-0-lite-260428` via Ark `/api/v3/responses`) is
 verified working as the image describer.
@@ -90,6 +91,30 @@ verified working as the image describer.
 To add/refresh a backend's credentials, edit `config.yaml` (`upstreams:`) and
 `systemctl --user restart llm-vision-proxy`, or re-run
 `scripts/extract-upstreams.py` after updating the cc-switch provider.
+
+## Codex CLI (OpenAI Responses API)
+
+Codex CLI v0.144+ requires `wire_api = "responses"` (chat is no longer supported).
+Point Codex at the proxy's `/v1/responses` endpoint; the proxy strips `input_image`
+parts (describing them via Doubao) and forwards to an `openai_responses`-format
+upstream (e.g. Ark `deepseek-v4-flash-ga-260731` via `/api/v3/responses`). Both sides
+are Responses API, so the response/stream is pure passthrough.
+
+`~/.codex/config.toml`:
+```toml
+model = "deepseek-v4-flash-ga-260731"
+model_provider = "visionproxy"
+
+[model_providers.visionproxy]
+name = "LLM Vision Proxy"
+base_url = "http://127.0.0.1:8417/v1"
+wire_api = "responses"
+env_key = "VISION_PROXY_KEY"   # export VISION_PROXY_KEY=vision-proxy (proxy ignores auth)
+```
+
+Note: this reasoning model hangs at `model_reasoning_effort = "max"` (>200s); use
+`high` or `medium`. Codex emits non-fatal `"... without active item"` warnings for
+this custom model (fallback metadata) but text + image responses work.
 
 ## Security
 
