@@ -25,11 +25,17 @@ class DoubaoConfig:
 
 @dataclass(frozen=True)
 class Upstream:
-    """A real text-only backend the proxy forwards to."""
+    """A real text-only backend the proxy forwards to.
+
+    `format` selects the wire format the backend speaks:
+      - "anthropic": Anthropic Messages API (base_url + /v1/messages)
+      - "openai": OpenAI Chat Completions API (base_url + /chat/completions)
+    """
 
     base_url: str
     api_key: str
     model: str
+    format: Literal["anthropic", "openai"] = "anthropic"
 
 
 @dataclass(frozen=True)
@@ -86,7 +92,14 @@ def _build_upstreams(d: dict) -> dict[str, Upstream]:
                 f"upstream.{name}.api_key is still a placeholder; fill config.yaml"
             )
         model = str(raw.get("model", name))
-        out[name] = Upstream(base_url=base_url.rstrip("/"), api_key=api_key, model=model)
+        fmt = str(raw.get("format", "anthropic"))
+        if fmt not in ("anthropic", "openai"):
+            raise ConfigError(
+                f"upstream.{name}.format must be 'anthropic' or 'openai', got '{fmt}'"
+            )
+        out[name] = Upstream(
+            base_url=base_url.rstrip("/"), api_key=api_key, model=model, format=fmt  # type: ignore[arg-type]
+        )
     return out
 
 
