@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""codex-use - fast switch between Codex CLI model profiles.
+
+Flips the active model / provider / reasoning effort in ~/.codex/config.toml
+in place, preserving everything else (providers, projects, instructions, ...).
+Both providers must already be defined in config.toml (cliproxyapi for gpt-5.6-sol,
+visionproxy for deepseek+vision).
+
+Usage:
+    codex-use            # show current active profile
+    codex-use daily      # deepseek-v4-flash-ga-260731 via vision proxy (vision-enabled)
+    codex-use hard       # gpt-5.6-sol via cliproxyapi (max reasoning)
+
+Note: use this instead of `cc-switch use ... -a codex` for Codex - cc-switch's codex
+profiles are stale and would overwrite the vision-proxy provider. New `codex`
+processes read config fresh, so switching takes effect on the next codex invocation
+(restart the Codex IDE/app-server if you use that).
+"""
+
+from __future__ import annotations
+
+import pathlib
+import sys
+import tomllib
+
+CONFIG = pathlib.Path.home() / ".codex" / "config.toml"
+BACKUP = CONFIG.with_name("config.toml.pre-switch")
+
+# effort: gpt-5.6-sol handles max fine. deepseek-v4-flash-ga at max is slow and
+# occasionally stalls (Codex stream-parsing quirks), so daily defaults to high
+# (strong reasoning, reliable). Adjust here if you want to try max on deepseek.
+PROFILES = {
+    "daily": {
+        "model_provider": "visionproxy",
+        "model": "deepseek-v4-flash-ga-260731",
+        "model_reasoning_effort": "high",
+    },
+    "hard": {
+        "model_provider": "cliproxyapi",
+        "model": "gpt-5.6-sol",
+        "model_reasoning_effort": "max",
+    },
+}
+
+
+def _read() -> str:
+    return CONFIG.read_text(encoding="utf-8")
+
+
+def _parse() -> dict:
+    return tomllib.loads(_read())
+
+
+def _current_profile() -> str | None:
+    cfg = _parse()
+    mp, model, eff = cfg.get("model_provider"), cfg.get("model"), cfg.get("model_reasoning_effort")
+    for name, p in PROFILES.items():
+        if mp == p["model_provider"] and model == p["model"]:
+            return name
+    return None
+
+
+def _replace_line(text: str, key: str, old: str | None, new: str) -> str:
+    """Replace the top-level `key = "old"` with `key = "new"` (exact, unique)."""
+    if old is None:
+        # Key absent: insert after the model_provider line (or at top).
+        anchor = 'model_provider = '
+        if anchor in text:
+            return text.replace(
+                anchor + '"' + _parse().get("model_provider", "") + '"',
+                anchor + '"' + _parse().get("model_provider", "") + '"\n'
+                + f'{key} = "{new}"',
+                1,
+            )
+        return f'{key} = "{new}"\n' + text
+    old_line = f'{key} = "{old}"'
+    new_line = f'{key} = "{new}"'
+    if old_line not in text:
+        raise SystemExit(f"could not find line '{old_line}' to replace")
+    return text.replace(old_line, new_line, 1)
+
+
+def switch(name: str) -> None:
+    if name not in PROFILES:
+        sys.exit(f"unknown profile '{name}'; choose from: {', '.join(PROFILES)}")
+    if not BACKUP.exists():
+        BACKUP.write_text(_read(), encoding="utf-8")
+        BACKUP.chmod(0o600)
+    cfg = _parse()
+    text = _read()
+    target = PROFILES[name]
+    text = _replace_line(text, "model_provider", cfg.get("model_provider"), target["model_provider"])
+    text = _replace_line(text, "model", cfg.get("model"), target["model"])
+    text = _replace_line(text, "model_reasoning_effort", cfg.get("model_reasoning_effort"),
+                         target["model_reasoning_effort"])
+    CONFIG.write_text(text, encoding="utf-8")
+    CONFIG.chmod(0o600)
+    print(f"codex -> {name}: {target['model_provider']} / {target['model']} (effort={target['model_reasoning_effort']})")
+
+
+def main() -> None:
+    if not CONFIG.exists():
+        sys.exit(f"config not found: {CONFIG}")
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        cur = _current_profile()
+        print(f"current: {cur or '(custom)'}")
+        print("profiles:")
+        for n, p in PROFILES.items():
+            print(f"  {n:<6} -> {p['model_provider']}/{p['model']} (effort={p['model_reasoning_effort']})")
+        print("\nusage: codex-use <daily|hard>")
+        return
+    switch(args[0])
+
+
+if __name__ == "__main__":
+    main()

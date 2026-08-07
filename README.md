@@ -116,6 +116,20 @@ Note: this reasoning model hangs at `model_reasoning_effort = "max"` (>200s); us
 `high` or `medium`. Codex emits non-fatal `"... without active item"` warnings for
 this custom model (fallback metadata) but text + image responses work.
 
+### Fast model switching (`codex-use`)
+
+Both providers coexist in `~/.codex/config.toml` (`cliproxyapi` for gpt-5.6-sol,
+`visionproxy` for deepseek+vision). Switch the active one with:
+
+```bash
+scripts/codex-use daily   # deepseek-v4-flash-ga-260731 + vision, effort=high
+scripts/codex-use hard    # gpt-5.6-sol via cliproxyapi, effort=max
+```
+
+Takes effect on the next `codex` invocation (new processes read config fresh). Use
+this instead of `cc-switch use ... -a codex` for Codex - cc-switch's codex profiles
+are stale and would overwrite the vision-proxy provider.
+
 ## Security
 
 - Listens on `127.0.0.1` only.
