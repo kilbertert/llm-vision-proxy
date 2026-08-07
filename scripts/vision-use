@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
-"""vision-use - point Claude Code at the llm-vision-proxy and select a backend model.
+"""vision-use - point Claude Code at the vision shim and select a backend model.
 
-Non-invasive: rewrites only the `env` block of ~/.claude/settings.json, preserving
-all other keys. The original (pre-vision) settings are snapshotted once to
-settings.json.pre-vision and can be restored with `vision-use off`.
+The vision shim (visionproxy, 8417) forwards to cliproxyapi (8317), which owns all
+model routing. So the available models are cliproxyapi's catalog. This helper lists
+them (queried from cliproxyapi /v1/models) and rewrites only the `env` block of
+~/.claude/settings.json, preserving all other keys.
 
 Usage:
-    vision-use                # list available models from config.yaml
-    vision-use <model>        # route Claude Code through the proxy using <model>
+    vision-use                # list available models from cliproxyapi
+    vision-use <model>        # route Claude Code through the shim using <model>
     vision-use off            # restore the original (pre-vision) settings
-
-Note: `cc-switch use <id>` overwrites settings.json and bypasses the proxy for that
-session; re-run `vision-use <model>` to re-enable vision.
 """
 
 from __future__ import annotations
@@ -20,36 +18,38 @@ import json
 import re
 import shutil
 import sys
+import urllib.request
 from pathlib import Path
 
+import yaml
+
+PROXY_URL = "http://127.0.0.1:8417"
+DUMMY_TOKEN = "vision-proxy"
 CONFIG = Path(__file__).resolve().parent.parent / "config.yaml"
 SETTINGS = Path.home() / ".claude" / "settings.json"
 PRE_VISION = SETTINGS.with_name("settings.json.pre-vision")
-PROXY_URL = "http://127.0.0.1:8417"
-DUMMY_TOKEN = "vision-proxy"
 
 
-def list_models(config: Path) -> list[str]:
-    models: list[str] = []
-    in_upstreams = False
-    for line in config.read_text(encoding="utf-8").splitlines():
-        if line.rstrip() == "upstreams:":
-            in_upstreams = True
-            continue
-        if in_upstreams:
-            if line and not line.startswith(" ") and not line.startswith("#"):
-                in_upstreams = False
-                continue
-            m = re.match(r"^  ([A-Za-z0-9_.\-]+):\s*$", line)
-            if m:
-                models.append(m.group(1))
-    return models
+def _forward() -> tuple[str, str]:
+    cfg = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    fwd = cfg["forward"]
+    return fwd["url"].rstrip("/"), fwd["api_key"]
+
+
+def list_models() -> list[str]:
+    url, key = _forward()
+    req = urllib.request.Request(url + "/v1/models", headers={"Authorization": f"Bearer {key}"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read().decode())
+        return [m.get("id") for m in data.get("data", []) if m.get("id")]
+    except Exception as exc:
+        print(f"(could not query cliproxyapi /v1/models: {exc})", file=sys.stderr)
+        return []
 
 
 def read_settings() -> dict:
-    if SETTINGS.exists():
-        return json.loads(SETTINGS.read_text(encoding="utf-8"))
-    return {}
+    return json.loads(SETTINGS.read_text(encoding="utf-8")) if SETTINGS.exists() else {}
 
 
 def write_settings(data: dict) -> None:
@@ -58,17 +58,11 @@ def write_settings(data: dict) -> None:
 
 
 def snapshot_original() -> None:
-    """One-time snapshot of the pre-vision settings so `off` can fully restore."""
     if not PRE_VISION.exists() and SETTINGS.exists():
         shutil.copy2(SETTINGS, PRE_VISION)
 
 
 def set_model(model: str) -> None:
-    models = list_models(CONFIG)
-    if not models:
-        sys.exit(f"no upstreams found in {CONFIG}")
-    if model not in models:
-        sys.exit(f"model '{model}' not in config upstreams: {', '.join(models)}")
     snapshot_original()
     data = read_settings()
     env = data.setdefault("env", {})
@@ -78,28 +72,24 @@ def set_model(model: str) -> None:
     env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = model
     env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = model
     write_settings(data)
-    print(f"vision proxy ON -> {PROXY_URL} (model={model})")
+    print(f"vision shim ON -> {PROXY_URL} (model={model})")
     print(f"snapshot saved: {PRE_VISION}  (restore with: vision-use off)")
 
 
 def turn_off() -> None:
     if PRE_VISION.exists():
         shutil.copy2(PRE_VISION, SETTINGS)
-        print(f"vision proxy OFF -> restored {SETTINGS} from {PRE_VISION}")
+        print(f"vision shim OFF -> restored {SETTINGS} from {PRE_VISION}")
     else:
-        # No snapshot: just drop the proxy env keys we manage.
         data = read_settings()
-        env = data.get("env", {})
         for k in (
-            "ANTHROPIC_BASE_URL",
-            "ANTHROPIC_AUTH_TOKEN",
-            "ANTHROPIC_DEFAULT_OPUS_MODEL",
-            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
             "ANTHROPIC_DEFAULT_HAIKU_MODEL",
         ):
-            env.pop(k, None)
+            data.get("env", {}).pop(k, None)
         write_settings(data)
-        print("vision proxy OFF -> removed proxy env keys (no snapshot found)")
+        print("vision shim OFF -> removed proxy env keys (no snapshot found)")
 
 
 def main() -> None:
@@ -107,8 +97,8 @@ def main() -> None:
         sys.exit(f"config not found: {CONFIG}")
     args = sys.argv[1:]
     if not args:
-        models = list_models(CONFIG)
-        print(f"Available models ({CONFIG}):")
+        models = list_models()
+        print(f"Available models (cliproxyapi catalog, {len(models)}):")
         for m in models:
             print(f"  - {m}")
         print("\nusage: vision-use <model>   |   vision-use off")

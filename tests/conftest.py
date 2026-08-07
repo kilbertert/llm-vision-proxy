@@ -9,23 +9,15 @@ from vision_proxy.config import load_config
 VALID_YAML = """
 listen: 127.0.0.1:8417
 doubao:
-  base_url: https://ark.cn-beijing.volces.com/api/v3/responses
+  base_url: https://ark.test/doubao/responses
   api_key: ark-test-key
   model: doubao-seed-2-0-lite-260428
-  max_output_tokens: 1024
+  max_output_tokens: 128
   timeout_s: 60
 cache_size: 16
-unknown_model: default_upstream
-default_upstream: deepseek-v4-flash
-upstreams:
-  deepseek-v4-flash:
-    base_url: https://api.deepseek.com/anthropic
-    api_key: ds-test-key
-    model: deepseek-v4-flash
-  glm-latest:
-    base_url: https://ark.cn-beijing.volces.com/api/plan
-    api_key: ark-glm-key
-    model: glm-latest
+forward:
+  url: http://cliproxyapi.test
+  api_key: cpa-test-key
 """
 
 

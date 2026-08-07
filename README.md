@@ -1,138 +1,102 @@
 # llm-vision-proxy
 
-Transparent vision gateway that gives **text-only LLMs** (DeepSeek, GLM, …) the
-ability to understand images, by describing images via the **Doubao** vision model
-and forwarding text-only requests to the real backend.
+A **thin vision shim** that gives text-only LLMs image understanding by describing
+images via the **Doubao** vision model, then forwarding the text-only request to a
+downstream gateway (**cliproxyapi**) which owns all model routing.
 
 ```
-Claude Code  ──POST /v1/messages (with image blocks)──►  llm-vision-proxy (127.0.0.1:8417)
-   │                                                          ├─ route by `model` → real backend
-   │                                                          ├─ describe each image via Doubao (Ark /api/v3/responses)
-   │                                                          └─ replace image blocks with text blocks
-   │                                                          │  (text-only request)
-   ▼                                                          ▼
-   ◄── streamed response (unchanged) ─────────────────  deepseek / glm / …
+Codex CLI / Claude Code  (any model: gpt-5.6-sol, deepseek-v4-flash-ga-260731, deepseek-v4-flash, glm-latest, …)
+   │  POST /v1/messages | /v1/chat/completions | /v1/responses  (with image content)
+   ▼
+llm-vision-proxy (127.0.0.1:8417)   ← thin shim: strip images -> Doubao description -> text-only
+   │  (text-only request, unchanged otherwise; same path)
+   ▼
+cliproxyapi (127.0.0.1:8317)        ← SINGLE model-supply manager: routes by `model`
+   ├─ gpt-5.6-sol                  -> codex-api-key
+   ├─ deepseek-v4-flash-ga-260731  -> openai-compatibility (Ark)
+   ├─ deepseek-v4-flash            -> openai-compatibility (api.deepseek.com)
+   └─ glm-latest                   -> claude-api-key (Ark)
 ```
 
-Claude Code points at the proxy; the proxy points at the real backend. Pasted images
-just work — the text model receives a natural-language description instead of raw
-pixels.
+**Model supply is managed in exactly one place: cliproxyapi's `config.yaml`.** This
+proxy does no model routing and holds no upstream credentials (only the Doubao key
+and the cliproxyapi forward key). The response/stream is pure passthrough - no
+protocol conversion, no model logic.
 
 ## Why
 
-DeepSeek/GLM served over Anthropic-compatible endpoints silently drop images (the
-model sees `[Unsupported Image]` and is blind). This proxy fixes that by converting
-each image to a text description before the request reaches the backend.
+DeepSeek/GLM served over OpenAI/Anthropic-compatible endpoints silently drop images
+(the model sees `[Unsupported Image]` and is blind). This shim fixes that by
+converting each image to a text description before the request reaches the backend.
 
 ## Configure
 
 ```bash
 cp config.example.yaml config.yaml
 chmod 600 config.yaml
-# edit config.yaml: fill doubao.api_key + each upstream's api_key
+# edit config.yaml: fill doubao.api_key + forward.api_key (cliproxyapi's key)
 ```
 
-`config.yaml` is gitignored and is the single source of truth for upstream
-credentials. Keys are **never** committed.
+`config.yaml` is gitignored. The cliproxyapi forward key is the same one Codex/Claude
+Code present to cliproxyapi (e.g. `CLIPROXYAPI_KEY`).
+
+To add a new model: add it to **cliproxyapi's** `config.yaml` (openai-compatibility /
+claude-api-key / codex-api-key). Nothing changes here.
 
 ## Run
 
 ```bash
-.venv/bin/uvicorn vision_proxy.app:create_app --factory \
-  --host 127.0.0.1 --port 8417
+.venv/bin/uvicorn vision_proxy.app:create_app --factory --host 127.0.0.1 --port 8417
+# or: systemctl --user enable --now llm-vision-proxy
 ```
-
-Or via systemd user service (see `deploy/llm-vision-proxy.service`):
-```bash
-systemctl --user enable --now llm-vision-proxy
-```
-
-## Point Claude Code at it
-
-Use the helper (rewrites `~/.claude/settings.json` env, non-invasive):
-```bash
-scripts/vision-use deepseek-v4-flash   # or glm-latest, LongCat-2.0, …
-```
-This sets `ANTHROPIC_BASE_URL=http://127.0.0.1:8417` and the chosen model. Switching
-via `cc-switch use` overrides this (disabling vision for that session); re-run
-`vision-use <model>` to restore.
 
 ## Endpoints
 
-- `POST /v1/messages` — Anthropic Messages API (streaming passthrough)
-- `POST /v1/messages/count_tokens` — token counting (images stripped first)
-- `GET /v1/models` — configured upstreams
-- `GET /healthz` — service + cache status
+- `POST /v1/messages`, `POST /v1/messages/count_tokens` - Anthropic Messages (Claude Code)
+- `POST /v1/chat/completions` - OpenAI Chat Completions
+- `POST /v1/responses` - OpenAI Responses (Codex CLI)
+- `GET /v1/models` - proxied to cliproxyapi (its catalog)
+- `GET /healthz` - status + forward target + cache
+
+Each endpoint strips images in its own format (Anthropic content blocks / OpenAI
+`image_url` parts / Responses `input_image` parts), then forwards to cliproxyapi.
+
+## Codex CLI (fast model switching)
+
+`~/.codex/config.toml` uses a single provider `visionproxy` (the shim, `wire_api =
+"responses"`). Switching models is just `model` + `model_reasoning_effort`:
+
+```bash
+scripts/codex-use daily   # deepseek-v4-flash-ga-260731, effort=high (vision-enabled)
+scripts/codex-use hard    # gpt-5.6-sol, effort=max
+```
+
+Takes effect on the next `codex` invocation. Use this instead of `cc-switch use ...
+-a codex` (its codex profiles are stale and would overwrite the shim provider).
+
+Note: `deepseek-v4-flash-ga` at `model_reasoning_effort = "max"` is slow and
+occasionally stalls (Codex stream-parsing quirks with this custom model), so daily
+defaults to `high`. Codex emits non-fatal `"... without active item"` warnings; text
++ image responses work.
+
+## Claude Code
+
+```bash
+scripts/vision-use                      # list models from cliproxyapi catalog
+scripts/vision-use deepseek-v4-flash-ga-260731   # route Claude Code through the shim
+scripts/vision-use off                  # restore original settings
+```
 
 ## Tests
 
 ```bash
-.venv/bin/pytest
+.venv/bin/pytest   # 52 tests
 ```
-
-## Backend status
-
-The proxy routes by `model` to a real text-only backend and is format-agnostic about
-backend health. Verified end-to-end (image -> Doubao description -> backend answers
-correctly) on this server:
-
-| Upstream model      | Backend                  | Format | Status |
-|---------------------|--------------------------|--------|--------|
-| `deepseek-v4-flash` | api.deepseek.com/anthropic | anthropic | ✅ works (Claude Code) |
-| `LongCat-2.0`       | api.longcat.chat/anthropic | anthropic | ✅ works |
-| `MiniMax-M3`        | api.minimaxi.com/anthropic | anthropic | ✅ works |
-| `deepseek-v4-flash-ga-260731` | ark …/api/v3 | openai_responses | ✅ works (Codex CLI) |
-| `glm-latest`        | ark …/api/plan           | anthropic | ⚠️ routed, but Ark **AgentPlan subscription expired** - renew in Ark console, then works with no code change |
-| `mimo-v2.5-pro`     | xiaomimimo.com/anthropic | anthropic | ⚠️ routed, but cc-switch token **invalid (401)** - refresh the mimo token |
-
-Doubao vision model (`doubao-seed-2-0-lite-260428` via Ark `/api/v3/responses`) is
-verified working as the image describer.
-
-To add/refresh a backend's credentials, edit `config.yaml` (`upstreams:`) and
-`systemctl --user restart llm-vision-proxy`, or re-run
-`scripts/extract-upstreams.py` after updating the cc-switch provider.
-
-## Codex CLI (OpenAI Responses API)
-
-Codex CLI v0.144+ requires `wire_api = "responses"` (chat is no longer supported).
-Point Codex at the proxy's `/v1/responses` endpoint; the proxy strips `input_image`
-parts (describing them via Doubao) and forwards to an `openai_responses`-format
-upstream (e.g. Ark `deepseek-v4-flash-ga-260731` via `/api/v3/responses`). Both sides
-are Responses API, so the response/stream is pure passthrough.
-
-`~/.codex/config.toml`:
-```toml
-model = "deepseek-v4-flash-ga-260731"
-model_provider = "visionproxy"
-
-[model_providers.visionproxy]
-name = "LLM Vision Proxy"
-base_url = "http://127.0.0.1:8417/v1"
-wire_api = "responses"
-env_key = "VISION_PROXY_KEY"   # export VISION_PROXY_KEY=vision-proxy (proxy ignores auth)
-```
-
-Note: this reasoning model hangs at `model_reasoning_effort = "max"` (>200s); use
-`high` or `medium`. Codex emits non-fatal `"... without active item"` warnings for
-this custom model (fallback metadata) but text + image responses work.
-
-### Fast model switching (`codex-use`)
-
-Both providers coexist in `~/.codex/config.toml` (`cliproxyapi` for gpt-5.6-sol,
-`visionproxy` for deepseek+vision). Switch the active one with:
-
-```bash
-scripts/codex-use daily   # deepseek-v4-flash-ga-260731 + vision, effort=high
-scripts/codex-use hard    # gpt-5.6-sol via cliproxyapi, effort=max
-```
-
-Takes effect on the next `codex` invocation (new processes read config fresh). Use
-this instead of `cc-switch use ... -a codex` for Codex - cc-switch's codex profiles
-are stale and would overwrite the vision-proxy provider.
 
 ## Security
 
 - Listens on `127.0.0.1` only.
-- `config.yaml` mode 600, gitignored; real keys live only here.
-- Logs contain only metadata (model, image counts, latency, errors) — never image
-  content or keys.
+- `config.yaml` mode 600, gitignored; holds only the Doubao key + cliproxyapi forward
+  key. Backend credentials live in cliproxyapi, not here.
+- Logs contain only metadata (format, model, image counts, latency, errors) - never
+  image content or keys.
