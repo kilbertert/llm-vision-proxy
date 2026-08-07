@@ -74,6 +74,28 @@ scripts/codex-use hard    # gpt-5.6-sol, effort=max
 Takes effect on the next `codex` invocation. Use this instead of `cc-switch use ...
 -a codex` (its codex profiles are stale and would overwrite the shim provider).
 
+### `codex daily` / `codex hard` (shell function)
+
+`.bashrc` defines a `codex()` function so `codex daily` / `codex hard` switch the
+model **and print a confirmation line, without opening the CLI**:
+
+```bash
+codex daily   # -> "codex -> daily: visionproxy / deepseek-v4-flash-ga-260731 (effort=high)"
+codex hard    # -> "codex -> hard: visionproxy / gpt-5.6-sol (effort=max)"
+```
+
+Any other invocation (`codex exec ...`, `codex --help`, plain `codex`) is passed
+through to the real codex unchanged.
+
+**Remote Codex app (Windows app -> server app-server)**: the server's `codex.js
+app-server` reads the same `~/.codex/config.toml` per new session, so `codex
+daily/hard` on the server takes effect on the next session you open in the app.
+If an app-server process cached an older model, restart it (a new session usually
+suffices).
+
+**Only switch without opening**: both `codex daily` and `codex hard` return after
+switching (they do not launch codex).
+
 Note: `deepseek-v4-flash-ga` at `model_reasoning_effort = "max"` is slow (the model
 reasons a lot), so daily defaults to `high`. The proxy normalizes the Responses
 stream (strips Ark's `response.reasoning_summary_*` events that Codex's fallback
