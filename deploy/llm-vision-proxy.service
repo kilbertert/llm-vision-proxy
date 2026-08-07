@@ -1,0 +1,19 @@
+[Unit]
+Description=LLM Vision Proxy (transparent vision gateway for text-only LLMs)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/claude/Projects/llm-vision-proxy
+Environment=VISION_PROXY_CONFIG=/home/claude/Projects/llm-vision-proxy/config.yaml
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/claude/Projects/llm-vision-proxy/.venv/bin/python -m uvicorn vision_proxy.app:create_app --factory --host 127.0.0.1 --port 8417
+Restart=on-failure
+RestartSec=3
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

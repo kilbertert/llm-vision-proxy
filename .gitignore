@@ -1,0 +1,23 @@
+# secrets / runtime config (never commit)
+config.yaml
+config.*.yaml
+config.yaml.bak
+config.*.bak
+*.bak
+.env
+.env.*
+
+# python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# os / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
