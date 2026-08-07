@@ -23,6 +23,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from . import openai_rewriter
+from . import responses_rewriter
 from ._version import __version__
 from .config import ProxyConfig, load_config
 from .describer import Describer
@@ -219,6 +220,23 @@ def create_app(config_path: str | None = None) -> FastAPI:
             request, fwd_bytes, route, "/chat/completions", bool(body.get("stream"))
         )
 
+    async def _handle_responses(request: Request, body_bytes: bytes, body: dict) -> Response:
+        model = body.get("model")
+        route, err = _resolve(model, "openai_responses", _error_openai)
+        if err is not None:
+            return err
+        new_body, stats = await responses_rewriter.rewrite_body(body, describer)
+        if stats.had_images:
+            log.info(
+                "responses rewrite model=%s upstream=%s images found=%d described=%d failed=%d",
+                model, route.upstream.model, stats.images_found,
+                stats.images_described, stats.images_failed,
+            )
+        fwd_bytes = _prepare_bytes(body_bytes, body, new_body, route)
+        return await _send_upstream(
+            request, fwd_bytes, route, "/responses", bool(body.get("stream"))
+        )
+
     @app.post("/v1/messages")
     async def messages(request: Request) -> Response:
         body_bytes = await request.body()
@@ -253,5 +271,16 @@ def create_app(config_path: str | None = None) -> FastAPI:
         if not isinstance(body, dict):
             return _error_openai("request body must be a JSON object", status=400)
         return await _handle_openai(request, body_bytes, body)
+
+    @app.post("/v1/responses")
+    async def responses(request: Request) -> Response:
+        body_bytes = await request.body()
+        try:
+            body = json.loads(body_bytes)
+        except json.JSONDecodeError:
+            return _error_openai("request body is not valid JSON", status=400)
+        if not isinstance(body, dict):
+            return _error_openai("request body must be a JSON object", status=400)
+        return await _handle_responses(request, body_bytes, body)
 
     return app
