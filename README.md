@@ -74,10 +74,11 @@ scripts/codex-use hard    # gpt-5.6-sol, effort=max
 Takes effect on the next `codex` invocation. Use this instead of `cc-switch use ...
 -a codex` (its codex profiles are stale and would overwrite the shim provider).
 
-Note: `deepseek-v4-flash-ga` at `model_reasoning_effort = "max"` is slow and
-occasionally stalls (Codex stream-parsing quirks with this custom model), so daily
-defaults to `high`. Codex emits non-fatal `"... without active item"` warnings; text
-+ image responses work.
+Note: `deepseek-v4-flash-ga` at `model_reasoning_effort = "max"` is slow (the model
+reasons a lot), so daily defaults to `high`. The proxy normalizes the Responses
+stream (strips Ark's `response.reasoning_summary_*` events that Codex's fallback
+metadata mode can't parse), eliminating the `"... without active item"` errors and
+stalls that otherwise occur.
 
 ## Claude Code
 
