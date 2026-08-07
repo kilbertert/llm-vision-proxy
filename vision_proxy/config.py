@@ -1,11 +1,16 @@
-"""Configuration loading and validation for llm-vision-proxy."""
+"""Configuration loading and validation for llm-vision-proxy (thin vision shim).
+
+The proxy no longer manages model supplies - it is a thin vision shim that strips
+image content from requests, describes each image via Doubao, and forwards the
+text-only request to a single downstream gateway (cliproxyapi) which owns all model
+routing. Model supply is managed in exactly one place: cliproxyapi.
+"""
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 import yaml
 
@@ -24,19 +29,11 @@ class DoubaoConfig:
 
 
 @dataclass(frozen=True)
-class Upstream:
-    """A real text-only backend the proxy forwards to.
+class Forward:
+    """The downstream gateway (cliproxyapi) that owns model routing."""
 
-    `format` selects the wire format the backend speaks:
-      - "anthropic": Anthropic Messages API (base_url + /v1/messages)
-      - "openai": OpenAI Chat Completions API (base_url + /chat/completions)
-      - "openai_responses": OpenAI Responses API (base_url + /responses)
-    """
-
-    base_url: str
+    url: str
     api_key: str
-    model: str
-    format: Literal["anthropic", "openai", "openai_responses"] = "anthropic"
 
 
 @dataclass(frozen=True)
@@ -45,16 +42,13 @@ class ProxyConfig:
     listen_port: int
     doubao: DoubaoConfig
     cache_size: int
-    unknown_model: Literal["default_upstream", "reject"]
-    default_upstream: str
-    upstreams: dict[str, Upstream] = field(default_factory=dict)
+    forward: Forward
 
 
 def _default_config_path() -> Path:
     env = os.environ.get("VISION_PROXY_CONFIG")
     if env:
         return Path(env)
-    # Default to config.yaml next to the package (project root).
     return Path(__file__).resolve().parent.parent / "config.yaml"
 
 
@@ -69,39 +63,21 @@ def _build_doubao(d: dict) -> DoubaoConfig:
     api_key = str(_require(d, "api_key", "doubao"))
     if api_key.startswith("REPLACE_WITH"):
         raise ConfigError("doubao.api_key is still a placeholder; fill config.yaml")
-    model = str(_require(d, "model", "doubao"))
-    max_output_tokens = int(d.get("max_output_tokens", 1024))
-    timeout_s = float(d.get("timeout_s", 60))
     return DoubaoConfig(
         base_url=base_url.rstrip("/"),
         api_key=api_key,
-        model=model,
-        max_output_tokens=max_output_tokens,
-        timeout_s=timeout_s,
+        model=str(_require(d, "model", "doubao")),
+        max_output_tokens=int(d.get("max_output_tokens", 1024)),
+        timeout_s=float(d.get("timeout_s", 60)),
     )
 
 
-def _build_upstreams(d: dict) -> dict[str, Upstream]:
-    out: dict[str, Upstream] = {}
-    for name, raw in d.items():
-        if not isinstance(raw, dict):
-            raise ConfigError(f"upstream '{name}' must be a mapping")
-        base_url = str(_require(raw, "base_url", f"upstream.{name}"))
-        api_key = str(_require(raw, "api_key", f"upstream.{name}"))
-        if api_key.startswith("REPLACE_WITH"):
-            raise ConfigError(
-                f"upstream.{name}.api_key is still a placeholder; fill config.yaml"
-            )
-        model = str(raw.get("model", name))
-        fmt = str(raw.get("format", "anthropic"))
-        if fmt not in ("anthropic", "openai", "openai_responses"):
-            raise ConfigError(
-                f"upstream.{name}.format must be 'anthropic', 'openai', or 'openai_responses', got '{fmt}'"
-            )
-        out[name] = Upstream(
-            base_url=base_url.rstrip("/"), api_key=api_key, model=model, format=fmt  # type: ignore[arg-type]
-        )
-    return out
+def _build_forward(d: dict) -> Forward:
+    url = str(_require(d, "url", "forward")).rstrip("/")
+    api_key = str(_require(d, "api_key", "forward"))
+    if api_key.startswith("REPLACE_WITH"):
+        raise ConfigError("forward.api_key is still a placeholder; fill config.yaml")
+    return Forward(url=url, api_key=api_key)
 
 
 def load_config(path: Path | str | None = None) -> ProxyConfig:
@@ -122,29 +98,10 @@ def load_config(path: Path | str | None = None) -> ProxyConfig:
     except ValueError as exc:
         raise ConfigError(f"listen port not an integer: {port_s}") from exc
 
-    doubao = _build_doubao(dict(_require(raw, "doubao", "root")))  # type: ignore[arg-type]
-    upstreams = _build_upstreams(dict(_require(raw, "upstreams", "root")))  # type: ignore[arg-type]
-    if not upstreams:
-        raise ConfigError("at least one upstream must be configured")
-
-    default_upstream = str(raw.get("default_upstream", next(iter(upstreams))))
-    if default_upstream not in upstreams:
-        raise ConfigError(
-            f"default_upstream '{default_upstream}' is not present in upstreams"
-        )
-
-    unknown_model = str(raw.get("unknown_model", "default_upstream"))
-    if unknown_model not in ("default_upstream", "reject"):
-        raise ConfigError(
-            f"unknown_model must be 'default_upstream' or 'reject', got '{unknown_model}'"
-        )
-
     return ProxyConfig(
         listen_host=host,
         listen_port=port,
-        doubao=doubao,
+        doubao=_build_doubao(dict(_require(raw, "doubao", "root"))),  # type: ignore[arg-type]
         cache_size=int(raw.get("cache_size", 256)),
-        unknown_model=unknown_model,  # type: ignore[arg-type]
-        default_upstream=default_upstream,
-        upstreams=upstreams,
+        forward=_build_forward(dict(_require(raw, "forward", "root"))),  # type: ignore[arg-type]
     )
