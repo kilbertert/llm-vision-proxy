@@ -110,6 +110,26 @@ scripts/vision-use deepseek-v4-flash-ga-260731   # route Claude Code through the
 scripts/vision-use off                  # restore original settings
 ```
 
+### `vision-use` details
+
+- `vision-use` (no args) queries cliproxyapi `/v1/models` and lists the catalog
+  (13 models incl. `deepseek-v4-flash-ga-260731`, `gpt-5.6-sol`, `glm-latest`, ...).
+- `vision-use <model>` rewrites only the `env` block of `~/.claude/settings.json`
+  (preserving other keys) to point Claude Code at the shim (`ANTHROPIC_BASE_URL=
+  http://127.0.0.1:8417`) with the chosen model. Takes effect on the **next** `claude`
+  session.
+- `vision-use off` restores the original settings from the pre-vision snapshot.
+- The original settings are snapshotted once to `settings.json.pre-vision`.
+
+**Claude Code effort**: unlike Codex's `model_reasoning_effort`, Claude Code's model
+name does not carry a real effort control here - Ark's deepseek reasons fully at its
+default, so no `(max)` suffix is needed. Use the plain model name; deepseek is
+already at full reasoning.
+
+**Remote Claude Code app**: like Codex, the remote Claude Code app reads the server's
+`~/.claude/settings.json` (via the same env), so `vision-use <model>` on the server
+takes effect on the next session you open in the app.
+
 ## Tests
 
 ```bash
