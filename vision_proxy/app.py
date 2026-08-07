@@ -20,7 +20,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from . import openai_rewriter, responses_rewriter, rewriter
+from . import openai_rewriter, responses_rewriter, responses_stream, rewriter
 from ._version import __version__
 from .config import ProxyConfig, load_config
 from .describer import Describer
@@ -78,19 +78,30 @@ def create_app(config_path: str | None = None) -> FastAPI:
             "cache": describer.cache_stats(),
         }
 
-    async def _send_forward(request: Request, fwd_bytes: bytes, path: str, is_stream: bool) -> Response:
+    async def _send_forward(
+        request: Request, fwd_bytes: bytes, path: str, is_stream: bool,
+        stream_filter=None,
+    ) -> Response:
         url = config.forward.url + path
         headers = _forward_req_headers(dict(request.headers), config.forward.api_key)
         if is_stream:
             req = client.build_request("POST", url, headers=headers, content=fwd_bytes)
             resp = await client.send(req, stream=True)
 
-            async def gen():
-                try:
-                    async for chunk in resp.aiter_bytes():
-                        yield chunk
-                finally:
-                    await resp.aclose()
+            if stream_filter:
+                async def gen():
+                    try:
+                        async for chunk in stream_filter(resp):
+                            yield chunk
+                    finally:
+                        await resp.aclose()
+            else:
+                async def gen():
+                    try:
+                        async for chunk in resp.aiter_bytes():
+                            yield chunk
+                    finally:
+                        await resp.aclose()
 
             return StreamingResponse(
                 gen(),
@@ -135,7 +146,13 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 stats.images_described, stats.images_failed,
             )
         fwd_bytes = json.dumps(new_body).encode("utf-8") if new_body is not None else body_bytes
-        return await _send_forward(request, fwd_bytes, path, bool(body.get("stream")))
+        # Strip Ark's response.reasoning_summary_* events from the Responses stream:
+        # Codex (fallback metadata mode) can't parse them and emits errors / stalls.
+        stream_filter = (
+            (lambda resp: responses_stream.normalize(resp.aiter_lines()))
+            if fmt == "openai_responses" else None
+        )
+        return await _send_forward(request, fwd_bytes, path, bool(body.get("stream")), stream_filter)
 
     @app.post("/v1/messages")
     async def messages(request: Request) -> Response:

@@ -27,9 +27,9 @@ BACKUP = CONFIG.with_name("config.toml.pre-switch")
 
 # Both profiles go through the vision shim (visionproxy -> cliproxyapi). cliproxyapi
 # owns all model routing, so switching is just model + effort. effort: gpt-5.6-sol
-# handles max fine; deepseek-v4-flash-ga at max is slow and occasionally stalls
-# (Codex stream-parsing quirks), so daily defaults to high. Adjust here if you want
-# to try max on deepseek.
+# handles max fine; deepseek-v4-flash-ga at max is slow (heavy reasoning) so daily
+# defaults to high. (Stream stalls from reasoning_summary events are already fixed by
+# the proxy's Responses normalizer.) Adjust here if you want max on deepseek.
 PROFILES = {
     "daily": {
         "model_provider": "visionproxy",
