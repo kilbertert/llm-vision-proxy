@@ -45,9 +45,15 @@ claude-api-key / codex-api-key). Nothing changes here.
 
 ## Run
 
+> **Retired 2026-09-30.** The `llm-vision-proxy` user service was stopped and
+> disabled; the unit file is archived at
+> `~/.local/state/retired-units/llm-vision-proxy.service.retired-20260930`.
+> Claude Code (via `claude-deepseek`) now talks to cliproxyapi directly and no
+> longer needs the shim. Run it manually only for a one-off vision task.
+
 ```bash
 .venv/bin/uvicorn vision_proxy.app:create_app --factory --host 127.0.0.1 --port 8417
-# or: systemctl --user enable --now llm-vision-proxy
+# the systemd unit is retired; run manually if ever needed again
 ```
 
 ## Endpoints
